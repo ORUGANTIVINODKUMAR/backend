@@ -19,7 +19,10 @@ const MERGED_DIR = path.join(__dirname, 'merged');
 });
 
 //const PORT = process.env.PORT || 3001;
-app.use(cors());
+app.use(cors({
+  origin: 'https://upsilontax.com/software'  // ✅ allow your frontend domain
+}));
+
 app.use(express.static('public')); 
 
 //const upload = multer({ dest: 'uploads/' }); replaced this code with 16 -- 25 code
