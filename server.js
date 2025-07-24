@@ -76,6 +76,9 @@ app.post('/merge', upload.array('pdfs'), (req, res) => {
 
 );
 
+app.get('/api/hello', (req, res) => {
+  res.json({ message: 'Hello from cyber.js backend!' });
+});
 
 app.listen(PORT, () => {
   console.log(`Server is running at http://localhost:${PORT}`);
