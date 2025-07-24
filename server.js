@@ -76,15 +76,6 @@ app.post('/merge', upload.array('pdfs'), (req, res) => {
 
 );
 
-app.post('/merge', upload.array('pdfs'), (req, res) => {
-  console.log("Uploaded files:");
-  req.files.forEach(file => {
-    console.log(file.path); // This is safe here
-  });
-
-  // ... rest of your code
-});
-
 
 app.listen(PORT, () => {
   console.log(`Server is running at http://localhost:${PORT}`);
