@@ -1,4 +1,3 @@
-
 import sys, os, io, tempfile, traceback, re
 from collections import defaultdict, Counter
 from typing import Dict, List, Tuple
@@ -250,6 +249,7 @@ def is_unused_page(text: str) -> bool:
         or "the account as of the date of death" in norm
         or "amount on the account holder" in norm
         #1099-Mortgage
+        or "for clients with paid mortgage insurance" in norm
         or "you can also contact the" in norm
         #or "" in norm
        
@@ -516,13 +516,9 @@ def classify_text(text: str) -> Tuple[str, str]:
       # Detect W-2 pages by their header phrases
     t = re.sub(r"\s+", " ", text.lower()).strip()
     # --- Detect Schedule K-1 (Form 1065) ---
-    if re.search(r"schedule\s*k[-–]?\s*1.*form\s*1065", t, re.I):
+    if "schedule k-1" in t or "form 1065" in t:
         return "Income", "K-1"
-    if "statement a" in t.lower() and "qbi" in t.lower():
-        return "Income", "K-1"
-    if "additional information from schedule k-1" in t.lower():
-        return "Income", "K-1"
-    if "qbi or qualified ptp items subject to partner" in t.lower():
+    if "statement a" in t and "qbi" in t:
         return "Income", "K-1"
 
     #Property Tax
@@ -536,7 +532,7 @@ def classify_text(text: str) -> Tuple[str, str]:
         or "real property tax proper iy location" in t
         or "property assessment" in t
         or "real property taxsssss" in t
-       
+        
     ):
         return "Expenses", "Property Tax"
     # --------------------------- 1095-C --------------------------- #
@@ -619,8 +615,8 @@ def classify_text(text: str) -> Tuple[str, str]:
         "#although the fundrise team seeks to",
         "fundrise receives updated information for",
         #1099-SA
-        #"fees and interest earnings",
-        #"if you have questions regarding",
+        "fees and interest earnings",
+        "if you have questions regarding",
         "you should contact a competent tax advisor"
         "Fees and interest earnings are not considered contributions",
         "contact a competent tax advisor or the irs",
@@ -629,7 +625,7 @@ def classify_text(text: str) -> Tuple[str, str]:
         "if you have questions regarding specific circumstances",
         "if you have questions regarding specific circumstances",
         #1098-T
-        "for the latest information about developments"
+        #"for the latest information about developments"
         "may result in an increase in tax",
         "reimbursements or refunds for the calendar",
         "rippling",
@@ -944,11 +940,7 @@ def classify_text(text: str) -> Tuple[str, str]:
     "refund of overpaid",
     "Mortgage insurance important tax Information",
     "mortgage origination date the information",
-    "box 1. mortgage interest received from",
-    "1. mortgage interest received from",
-    "1 mortgage interest received from",  
-    "1 mortgage interest received from payer",
-    "2 outstanding mortgage 3 mortgage origination date borrower"
+    "1 mortgage interest received from",
     #"Account number (see instructions)"
     ]
     mort_unused = [
@@ -963,9 +955,6 @@ def classify_text(text: str) -> Tuple[str, str]:
         "We’re providing the mortgage insurance",
         "If you received this statement as the payer of",
         "If your mortgage payments were subsidized"
-        "for clients with paid mortgage insurance"
-        
-        
        
     ]
     lower = text.lower()
@@ -1852,13 +1841,6 @@ def extract_1098mortgage_bookmark(text: str) -> str:
     """
     lines: List[str] = text.splitlines()
     lower_lines = [L.lower() for L in lines]
-    # --- Nationstar / Mr. Cooper override ---
-    for L in lines:
-        if re.search(r"nationstar\s+mortgage.*cooper", L, re.IGNORECASE):
-            bookmark = "Nationstar Mortgage LLC d/b/a Mr. Cooper"
-            print(f"[1098-MORTGAGE] Rule: Nationstar / Mr. Cooper override → {bookmark}", file=sys.stderr)
-            return finalize_bookmark(bookmark)
-    
     # 7) PHH Mortgage Corporation override
     for L in lines:
         if re.search(r"\bphh\s+mortgage\s+corporation\b", L, flags=re.IGNORECASE):
@@ -1907,15 +1889,6 @@ def extract_1098mortgage_bookmark(text: str) -> str:
             print(f"[1098-MORTGAGE] Rule: JPMorgan Chase override → {bookmark}", file=sys.stderr)
             return finalize_bookmark(bookmark)
             # 🔹 NEW Rule: handle "RECIPIENT'S/LENDER'S name..." header pattern
-        # 7) KEYBANK NATIONAL ASSOCIATION override
-    for L in lines:
-        if re.search(r"\bkey\s*bank\b", L, flags=re.IGNORECASE):
-            bookmark = "KEYBANK NATIONAL ASSOCIATION"
-            print(f"[1098-MORTGAGE] Rule: KeyBank override → {bookmark}", file=sys.stderr)
-            return finalize_bookmark(bookmark)
-
-
-
     # 8) FOR RETURN SERVICE ONLY override
     for L in lines:
         if re.search(r"\bfor\s+return\s+service\s+only\b", L, flags=re.IGNORECASE):
@@ -1923,27 +1896,13 @@ def extract_1098mortgage_bookmark(text: str) -> str:
             print(f"[1098-MORTGAGE] Rule: FOR RETURN SERVICE ONLY override → {bookmark}", file=sys.stderr)
             return finalize_bookmark(bookmark)
     # 9) Citizens Bank override
+        # 8) Citizens Bank override
     for L in lines:
         # Match clean and OCR-distorted variations of 'Citizens Bank'
         if re.search(r"cit[i1l]zens?\s*(bank|banx|banc)", L, flags=re.IGNORECASE):
             bookmark = "CITIZENS BANK, N.A."
             print(f"[1098-MORTGAGE] Rule: Citizens Bank override → {bookmark}", file=sys.stderr)
             return finalize_bookmark(bookmark)
-    # 9) Citizens Bank override (handles multi-line / OCR noise)
-    for i, L in enumerate(lines):
-    # 🔹 Citizens Bank override (handles multiline, OCR noise, and brand variants)
-        text_joined = " ".join(lines)  # Merge all lines for flexible search
-    # Normalize OCR junk
-        text_joined = re.sub(r"[^A-Za-z0-9\s&.,-]", " ", text_joined)
-        text_joined = re.sub(r"\s{2,}", " ", text_joined)
-
-    # Match "Citizens" followed later by "Bank" or similar within ~80 chars
-        if re.search(r"cit[i1l]zens?.{0,80}(bank|banx|banc|n\.?a\.?)", text_joined, re.IGNORECASE):
-            bookmark = "CITIZENS BANK, N.A."
-            print(f"[1098-MORTGAGE] Rule: Citizens Bank override → {bookmark}", file=sys.stderr)
-            return finalize_bookmark(bookmark)
-
-
 
 
     
@@ -2067,56 +2026,16 @@ def extract_1098mortgage_bookmark(text: str) -> str:
             bookmark = m.group(1) if m else L.strip()
             print(f"[1098-MORTGAGE] Rule: FCU fallback → {bookmark}", file=sys.stderr)
             return finalize_bookmark(bookmark)
-    # 11) Smarter global fallback — only scan after the "RECIPIENT'S/LENDER'S" header
-    lender_start_idx = None
-    for i, L in enumerate(lines):
-        if re.search(r"recipient.?/?s?.?lender.?s?", L, re.IGNORECASE):
-            lender_start_idx = i
-            break
-
-    # If not found, just start halfway down to avoid instructions
-    start_idx = lender_start_idx + 1 if lender_start_idx is not None else len(lines) // 2
-
-    for i in range(start_idx, len(lines)):
-        L = lines[i]
-        # Skip bad header fragments or numbered fields
-        if re.match(r"^\s*\d+\s", L):
-            continue
-        if re.search(r"recipient|payer|borrower|principal|box\s*\d+", L, re.I):
-            continue
-        if re.search(r"province|county|postal|zip", L, re.I):
-            continue
-
-        # Skip obviously bad instruction fragments
-        if re.search(r"(payer|borrower|irs|form\s*1098|instructions|schedule|calendar\s+year)", L, re.IGNORECASE):
-            continue
-
-        # Skip pure sentence fragments (start with lowercase or words like 'A person including...')
-        if re.match(r"^\s*(a\s+person|if\s+you|each\s+borrower|box\s*\d+)", L.strip(), flags=re.IGNORECASE):
-            continue
-
-        # Skip known non-lender words
-        if re.search(r"(loan\s+servicing\s+department|customer\s+service|payment\s+center|loan\s+administration)", L, re.IGNORECASE):
-            continue
-
-        # Now look for a real company line
-        if re.search(r"(bank|mortgage|finance|servicing|llc|fcu|trust|corp|company|association|credit|dba|corporation)", L, re.IGNORECASE):
+    # 11) Global fallback: scan all lines for any valid lender name if earlier logic failed
+    for L in lines:
+        if re.search(r"(bank|mortgage|servicing|llc|fcu|trust|corp|company|association|credit|dba|corporation)", L, re.IGNORECASE):
+        # Skip if line looks like IRS or instruction text
+            if re.search(r"(department of the treasury|irs|payer|borrower|form 1098|instructions)", L, re.IGNORECASE):
+                continue
             clean = re.sub(r"[^A-Za-z0-9&.,' ]+", " ", L).strip()
             if len(clean) > 8:
-                print(f"[1098-MORTGAGE] Rule: Smart fallback after LENDER header → {clean}", file=sys.stderr)
+                print(f"[1098-MORTGAGE] Rule: Global lender fallback → {clean}", file=sys.stderr)
                 return finalize_bookmark(clean)
-
-    # 12) As a final safeguard — look above 'Loan Servicing Department' for true lender
-    for i, L in enumerate(lines):
-        if re.search(r"loan\s+servicing\s+department", L, re.IGNORECASE):
-            for k in range(1, 4):
-                if i - k >= 0:
-                    prev = lines[i - k].strip()
-                    if re.search(r"(mortgage|bank|finance|llc|inc|corp|company|fcu|trust)", prev, re.IGNORECASE):
-                        print(f"[1098-MORTGAGE] Rule: Found lender above Loan Servicing Department → {prev}", file=sys.stderr)
-                        return finalize_bookmark(prev)
-
-
 def trim_lender_text(raw: str) -> str:
     """
     Trim noisy OCR fragments and keep only the clean lender name.
@@ -2232,41 +2151,9 @@ def finalize_bookmark(bookmark: str) -> str:
         if idx != -1:
             bookmark = bookmark[:idx].strip(" ,.-")
             break
-    # --- Extra trimming for OCR tail junk (words that sometimes leak into bookmark) ---
-    junk_tails = [
-        "interest", "statement", "rev", "calendar", "year", "form",
-        "2020", "2021", "2022", "2023", "2024", "omb", "no", "filer",
-        "copy", "payer", "borrower", "irs", "treasury", "department",
-        "fares", "sanwa", "worst", "coe"
-    ]
-    for jt in junk_tails:
-        m = re.search(rf"\b{jt}\b.*$", bookmark, re.IGNORECASE)
-        if m:
-            bookmark = bookmark[:m.start()].strip(" ,.-")
-            break 
-
-    # If we already have a clean ending suffix, stop there
-    m = re.search(
-        r"\b(Federal Credit Union|LLC|Inc\.?|Corp\.?|N\.A\.|Bank|Association|Servicing|Company|Corporation)\b",
-        bookmark,
-        re.I
-    )
-    if m:
-        bookmark = bookmark[:m.end()].strip(" ,.-")
-
-    # --- Trim lender names to stop after key suffix words ---
-    # Example: "On The Loan Amount Mortgage West Gate Bank Ang The Cost..." → "West Gate Bank"
-    suffix_cut = re.search(
-        r"\b([A-Z][A-Za-z0-9&' .,-]*(Bank|Trust|FCU|Company|Association|Servicing|Mortgage|Lender))\b",
-        bookmark,
-        re.IGNORECASE
-    )
-    if suffix_cut:
-        bookmark = suffix_cut.group(1).strip(" ,.-")
 
     # 7) Normalize spacing
     bookmark = re.sub(r'\s{2,}', ' ', bookmark).strip(" ,.-")
-
 
     # 8) Smart-case: Title-case but preserve common suffixes
     def smart_case(s: str) -> str:
@@ -2287,6 +2174,8 @@ def finalize_bookmark(bookmark: str) -> str:
 
     bookmark = smart_case(bookmark)
     return bookmark
+
+
 
 
 def group_by_type(entries: List[Tuple[str,int,str]]) -> Dict[str,List[Tuple[str,int,str]]]:
@@ -2389,6 +2278,9 @@ def extract_5498sa_bookmark(text: str) -> str:
 
     # --- Step 6: Fallback ---
     return "5498-SA"
+
+
+
 
 #1098-T
 def extract_1098t_bookmark(text: str) -> str:
@@ -2571,28 +2463,6 @@ def classify_div_int(text: str) -> str | None:
     elif int_match:
         return "1099-INT"
     return None
-# ---------- Schedule K-1 EIN grouping helpers ----------
-
-import re
-from PyPDF2 import PdfReader
-
-def extract_ein(text: str):
-    match = re.search(r"EIN\s*[:#]?\s*(\d{2}-\d{7})", text, re.IGNORECASE)
-    if match:
-        return match.group(1)
-
-    # Fallback: unlabeled EIN (no capture group needed)
-    match = re.search(r"\b\d{2}-\d{7}\b", text)
-    if match:
-        return match.group(0)
-
-    return None
-
-def extract_entity_name(text: str) -> str | None:
-    """Detect entity name (LLC, LP, LLP, etc.)."""
-    match = re.search(r"([A-Z][A-Za-z0-9&.,'\-\s]{3,60}(?:LLC|LP|LLP))", text, re.IGNORECASE)
-    return match.group(1).strip() if match else None
-
 # ── Merge + bookmarks + cleanup
 def merge_with_bookmarks(input_dir: str, output_pdf: str):
     # Prevent storing merged file inside input_dir
@@ -2893,6 +2763,37 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str):
     # Sort
     income.sort(key=lambda e:(get_form_priority(e[2],'Income'), e[0], e[1]))
     expenses.sort(key=lambda e:(get_form_priority(e[2],'Expenses'), e[0], e[1]))
+    # --- Schedule K-1 (Form 1065) grouping ---
+    # --- Schedule K-1 (Form 1065) grouping ---
+# --- Schedule K-1 (Form 1065) grouping ---
+    k1_groups = []
+    current_group = None
+
+    for idx, entry in enumerate(income):
+        path, page_idx, form_type = entry
+        page_text = extract_text(path, page_idx).lower()
+
+        if "schedule k-1" in page_text or "form 1065" in page_text:
+            ein_match = re.search(r"ein\s*[:#]?\s*(\d{2}-\d{7})", page_text, re.IGNORECASE)
+            entity_match = re.search(r"([A-Z][A-Za-z0-9&.,'\-\s]{3,60}(?:LLC|LP|LLP))",
+                                 page_text, re.IGNORECASE)
+
+            ein = ein_match.group(1) if ein_match else "Unknown-EIN"
+            entity = entity_match.group(1).strip() if entity_match else "Unknown Entity"
+
+            if current_group:
+                k1_groups.append(current_group)
+            # 👇 This line must be indented exactly one level inside the “if” block
+            current_group = {"entity": entity, "ein": ein, "entries": [entry]}
+
+        elif current_group:
+            current_group["entries"].append(entry)
+
+    if current_group:
+        k1_groups.append(current_group)
+
+
+
     # merge & bookmarks
     merger = PdfMerger()
     page_num = 0
@@ -2946,6 +2847,22 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str):
         root = merger.add_outline_item('Income', page_num)
         groups = group_by_type(income)
         for form, grp in sorted(groups.items(), key=lambda kv: get_form_priority(kv[0], 'Income')):
+                # --- Add Schedule K-1 (Form 1065) hierarchy ---
+            if k1_groups:
+                k1_root = merger.add_outline_item("K-1", page_num, parent=root)
+                form1065_node = merger.add_outline_item("Form 1065", page_num, parent=k1_root)
+
+                for group in k1_groups:
+                    label = f"{group['entity']} – (EIN: {group['ein']})"
+                    entity_node = merger.add_outline_item(label, page_num, parent=form1065_node)
+        # Add the first page as the main bookmark
+                    first_entry = group["entries"][0]
+                    append_and_bookmark(first_entry, entity_node, "", with_bookmark=False)
+        # Append continuation pages silently
+                    for entry in group["entries"][1:]:
+                        append_and_bookmark(entry, entity_node, "", with_bookmark=False)
+
+
             # Skip creating form bookmarks if all pages are already under Consolidated-1099
             filtered_grp = [e for e in grp if (e[0], e[1]) not in consolidated_pages]
             if not filtered_grp:
@@ -2979,7 +2896,7 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str):
                             others.append((real_entry[0], real_entry[1], "Unused"))
                             #append_and_bookmark(real_entry, forms_node, "Unused")
                             continue
-                
+
     # 1️⃣ First, check strong classifier
                         form_type = classify_div_int(page_text)
 
@@ -3033,37 +2950,6 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str):
                                 append_and_bookmark(real_entry, forms_node, "", with_bookmark=False)
 
                 continue
-                    # 🆕 Schedule K-1 (Form 1065) hierarchy
-
-            if form == 'K-1':
-                k1_root = merger.add_outline_item('K-1', page_num, parent=root)
-
-                # --- Group pages by EIN ---
-                k1_groups = {}
-                for path, idx, _ in grp:
-                    text = extract_text(path, idx)
-                    ein = extract_ein(text)
-                    entity = extract_entity_name(text) or "Unknown Entity"
-                    key = ein or f"PAGE_{idx}"
-                    k1_groups.setdefault(key, {'ein': ein or 'Unknown-EIN', 'entity': entity, 'pages': []})
-                    k1_groups[key]['pages'].append((path, idx))
-
-                # --- Each EIN becomes its own “Form 1065 – (EIN …)” bookmark ---
-                for g in k1_groups.values():
-                    form_label = f"Form 1065 – (EIN {g['ein']})"
-                    form1065_node = merger.add_outline_item(form_label, page_num, parent=k1_root)
-
-                    # Add entity name as a sub-bookmark
-                    entity_label = g['entity']
-                    entity_node = merger.add_outline_item(entity_label, page_num, parent=form1065_node)
-
-                    # Append each page under entity
-                    for (path, idx) in g['pages']:
-                        append_and_bookmark((path, idx, 'K-1'), entity_node, "", with_bookmark=False)
-
-            continue
-
-
   # done with this form; go to next
             #Normal Forms
             node = merger.add_outline_item(form, page_num, parent=root)
@@ -3288,4 +3174,3 @@ if __name__=='__main__':
     p.add_argument('output_pdf', help="Path for the merged PDF (outside input_dir)")
     args = p.parse_args()
     merge_with_bookmarks(args.input_dir, args.output_pdf)
-    
