@@ -2,17 +2,11 @@
 import io
 import fitz  # PyMuPDF
 from PIL import Image, ImageOps, ImageEnhance, ImageFilter
-# ── Prevent PIL DecompressionBombError for large tax PDFs
-Image.MAX_IMAGE_PIXELS = None  # Safe because inputs are trusted (W-2/1099 client docs)
 
-
-def pdf_page_to_image(path: str, page_index: int, dpi: int = 300) -> Image.Image:
+def pdf_page_to_image(path: str, page_index: int, dpi: int = 400) -> Image.Image:
     """
     Convert a PDF page to a preprocessed PIL image optimized for OCR.
-    Adds automatic rotation correction for 0°, 90°, 180°, 270° pages.
     Steps (no OpenCV):
-      - Detect & fix PDF metadata rotation
-      - OCR-based auto-rotation (Tesseract OSD)
       - High DPI render
       - Convert to grayscale
       - Auto-contrast & brightness boost
@@ -23,88 +17,44 @@ def pdf_page_to_image(path: str, page_index: int, dpi: int = 300) -> Image.Image
     doc = fitz.open(path)
     page = doc.load_page(page_index)
 
-    # 🧭 Step 1: Correct rotation using PDF metadata
-    rotation = int(page.rotation or 0)
+    # Render with high DPI
     zoom = dpi / 72
-    mat = fitz.Matrix(zoom, zoom).prerotate(-rotation)
-
+    mat = fitz.Matrix(zoom, zoom)
     pix = page.get_pixmap(matrix=mat, alpha=False)
-
-    # Convert to RGB image
-    try:
-        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
-    except Image.DecompressionBombError:
-        logger.warning(f"⚠️ Skipping OCR: page too large in {path} p{page_index+1}")
-        doc.close()
-        return Image.new("L", (100, 100), color=255)
-
-    # 🧠 Step 2: OCR-based auto-rotation (for scanned sideways pages)
-    try:
-        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
-        angle = osd.get("rotate", 0)
-        if angle != 0:
-            print(f"[Rotation Fix] Auto-rotating page {page_index+1} by {angle}°")
-            img = img.rotate(-angle, expand=True)
-    except Exception as e:
-        print(f"[WARN] Tesseract OSD rotation failed on page {page_index+1}: {e}")
-
     doc.close()
 
-    # 🖼 Step 3: Continue your original preprocessing
-    img = img.convert("L")  # grayscale
+    # Base grayscale image
+    img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("L")
+
+    # Normalize brightness & contrast
     img = ImageOps.autocontrast(img)
-    img = ImageEnhance.Brightness(img).enhance(1.2)
-    img = ImageEnhance.Contrast(img).enhance(1.5)
+    img = ImageEnhance.Brightness(img).enhance(1.2)   # brighten slightly
+    img = ImageEnhance.Contrast(img).enhance(1.5)     # increase contrast
+
+    # Double sharpen
     img = img.filter(ImageFilter.SHARPEN)
     img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=3))
 
-    # Rescale if small
+    # Rescale if image is small (OCR likes ~3000px width for full page)
     w, h = img.size
     if w < 2000:
         scale = 2000 / w
         img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # Dual thresholding
+    # Try two threshold passes: light and dark
     def threshold(im, cutoff):
         return im.point(lambda x: 0 if x < cutoff else 255, "1")
 
     light = threshold(img, 160)
     dark = threshold(img, 200)
+
+    # Heuristic: choose the version with more black pixels (more likely text-heavy)
     black_ratio_light = sum(light.getdata()) / (255 * light.size[0] * light.size[1])
     black_ratio_dark = sum(dark.getdata()) / (255 * dark.size[0] * dark.size[1])
+
     img_final = light if black_ratio_light < black_ratio_dark else dark
 
     return img_final
-
-
-def preprocess_old_safe(img: Image.Image) -> Image.Image:
-    """
-    Gentle, safe OCR preprocessing that improves clarity
-    WITHOUT breaking W-2 text.
-    """
-    # 1. Convert to grayscale
-    img = img.convert("L")
-
-    # 2. Light auto-contrast (safe)
-    img = ImageOps.autocontrast(img, cutoff=1)
-
-    # 3. Slight sharpness boost
-    img = ImageEnhance.Sharpness(img).enhance(1.2)
-
-    # 4. Light contrast/brightness (safe)
-    img = ImageEnhance.Contrast(img).enhance(1.15)
-    img = ImageEnhance.Brightness(img).enhance(1.05)
-
-    # 5. Light noise reduction
-    img = img.filter(ImageFilter.MedianFilter(size=3))
-
-    # 6. Upscale if image is small
-    w, h = img.size
-    if w < 1800:
-        scale = 1800 / w
-        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
-
-    return img
 
 def extract_text(path: str, page_index: int) -> str:
     text = ""
@@ -113,17 +63,18 @@ def extract_text(path: str, page_index: int) -> str:
         try:
         # 🔹 Use only 300 DPI for sharper OCR
             dpi = 300
-            img = pdf_page_to_image(path, page_index, dpi=300)
+            img = pdf_page_to_image(path, page_index, dpi=dpi)
 
-# NEW safe preprocessing
-            img = preprocess_old_safe(img)
+        # 🔹 Preprocess: convert to grayscale + threshold (binarization)
+            gray = img.convert("L")
+            bw = gray.point(lambda x: 0 if x < 180 else 255, '1')  # simple binarization
 
+        # 🔹 OCR with stronger settings
             t_ocr = pytesseract.image_to_string(
-                img,
+                bw,
                 lang="eng",
-                config="--oem 3 --psm 6 -c preserve_interword_spaces=1"
-            )
-
+                config="--oem 3 --psm 6"   # OEM 3 = default LSTM, PSM 6 = block of text
+            ) or ""
 
             print(f"[OCR dpi={dpi}]\n{t_ocr}", file=sys.stderr)
 
@@ -133,16 +84,14 @@ def extract_text(path: str, page_index: int) -> str:
         except Exception:
             traceback.print_exc()
 
+
     # PDFMiner
     try:
         t1 = pdfminer_extract(path, page_numbers=[page_index], laparams=PDFMINER_LA_PARAMS) or ""
-        t1 = t1.strip()
-        print(f"[PDFMiner full] {len(t1)} chars\n{t1}", file=sys.stderr)
-        if len(t1) > len(text.strip()):
-            text = t1
+        print(f"[PDFMiner full]\n{t1}", file=sys.stderr)
+        if len(t1.strip()) > len(text): text = t1
     except Exception:
         traceback.print_exc()
-
     # PyPDF2 fallback
     if len(text.strip()) < OCR_MIN_CHARS:
         try:
@@ -171,5 +120,3 @@ def extract_text_from_image(file_path: str) -> str:
         logger.error(f"Error OCR image {file_path}: {e}")
         text = f"Error OCR image: {e}"
     return text
-
-
