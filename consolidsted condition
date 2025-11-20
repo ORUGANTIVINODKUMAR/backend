@@ -1,0 +1,178 @@
+
+def extract_account_number(text: str, form_type: str = "", page_number: int = None) -> str | None:
+    # --- normalize ---
+    text = text.replace("\n", " ")
+    while "  " in text:
+        text = text.replace("  ", " ")
+    lower = text.lower()
+
+    # --- skip rules (same as yours) ---
+    
+
+    # ------------------------------------------------------------------
+    # ACORNS SECURITIES LLC - only run this if it's really Acorns
+    # ------------------------------------------------------------------
+    acorns_account = None
+    if "acorns securities llc" in lower:
+        acorns_patterns = [
+            # "Account 01147670570416B1"
+            r"Account[\s:\-\u200B\u200C\u200D\u00A0\uFEFF]*([0-9]{10,}[A-Za-z0-9]*)",
+            # "Account\n01147670570416B1"
+            r"Account[^\n\r]{0,40}\s+([0-9]{10,}[A-Za-z0-9]*)",
+            # "Account: 01147670570416B1"
+            r"Account\s*[:\-]\s*([0-9]{10,}[A-Za-z0-9]*)",
+            # OCR glitches: "Accourt", "Accoumt", etc.
+            r"Accou[nmrt0]+\s*([0-9]{10,}[A-Za-z0-9]*)",
+            # "Account01147670570416B1"
+            r"Account([0-9]{10,}[A-Za-z0-9]*)",
+        ]
+
+        for p in acorns_patterns:
+            m = re.search(p, text, flags=re.IGNORECASE)
+            if m:
+                acorns_account = m.group(1).strip()
+                break
+
+        # last-resort: any 14–18-char digit/letter blob
+        if not acorns_account:
+            fallback = re.search(r"\b([0-9]{10,16}[A-Za-z0-9]{0,4})\b", text)
+            if fallback:
+                acorns_account = fallback.group(1).strip()
+
+        if acorns_account:
+            acorns_account = (
+                acorns_account.replace(" ", "")
+                              .replace("–", "-")
+                              .replace("—", "-")
+                              .replace("\u00A0", "")
+                              .replace("\u200B", "")
+                              .replace("\u200C", "")
+                              .replace("\u200D", "")
+                              .replace("\uFEFF", "")
+            )
+            if page_number is not None:
+                print(f"✅ Page {page_number} → ACORNS account detected: {acorns_account}")
+            return acorns_account
+
+    # ---------------------------------------------------------------------
+    # 2️⃣ FIDELITY 1099 (OCR SAFE)
+    # ---------------------------------------------------------------------
+    fidelity_patterns = [
+        r"Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
+        r"AccountNo\.?\s*[:\-]?\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
+        r"Account\s*No\.?[^\n\r]*\n\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
+        r"AccountNo\.?[^\n\r]*\n\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
+        r"AccountNo\.?\s*([A-Za-z0-9]{4,})",
+        r"Account\s*No\s+([A-Za-z0-9]{4,})",
+        r"Account\s*No\.?\s*([A-Za-z0-9]+[\u2010\u2011\u2012\u2013\u2014\-][A-Za-z0-9\-]+)",
+    ]
+
+    fidelity_account = None
+    for p in fidelity_patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            fidelity_account = m.group(1).strip()
+            break
+
+    if fidelity_account:
+        fidelity_account = re.sub(r"^2Z", "Z", fidelity_account, flags=re.IGNORECASE)
+        fidelity_account = re.sub(r"^2?24-", "Z24-", fidelity_account, flags=re.IGNORECASE)
+        fidelity_account = fidelity_account.replace("–", "-").replace("—", "-")
+
+    # ---------------------------------------------------------------------
+    # 3️⃣ UBS (Account W5 34244)
+    # ---------------------------------------------------------------------
+    ubs_account = None
+    m = re.search(r"Account\s+([A-Za-z0-9]{1,4}\s+[0-9]{3,})", text, re.IGNORECASE)
+    if m:
+        ubs_account = m.group(1).strip().replace(" ", "")
+
+    # ---------------------------------------------------------------------
+    # 4️⃣ MERRILL LYNCH / MERRILL EDGE
+    # ---------------------------------------------------------------------
+    merrill_account = None
+    merrill_patterns = [
+        r"Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
+        r"Account\s*No\.?[^\n\r]*\n\s*([A-Za-z0-9\-]{4,})",
+        r"(?:Merrill(?:\s+Lynch|\s+Edge)?)?\s*Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
+        r"Accou[nmrt]+\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
+        r"Customer\s*Account\s*Number[:\s]*([A-Za-z0-9\s\-]{4,})",
+        r"Account\s+([A-Za-z0-9]{4,})",
+    ]
+
+    for p in merrill_patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            merrill_account = m.group(1).strip()
+            break
+
+    if merrill_account:
+        merrill_account = merrill_account.replace(" ", "").replace("-", "").upper()
+
+    # ---------------------------------------------------------------------
+    # 5️⃣ STANDARD (enhanced)
+    # ---------------------------------------------------------------------
+    std_patterns = [
+        r"Account\s*Number[:\s]*([\d\-]+)",
+        r"Account Number:\s*([\d\s]+)",
+        r"ORIGINAL:\s*([\d\s]+)",
+        r"Account\s+(\d+)"
+        r"Account\s*Number[:\s]*([\dA-Za-z\-]+)",
+        r"Account Number:\s*([\dA-Za-z\s]+)",
+        r"Account\s*No\.?[:\s]*([\dA-Za-z\-]+)",
+        r"ORIGINAL:\s*([\dA-Za-z\s]+)",
+        r"Account\s+(?!WITH\b)(?=[A-Za-z0-9\-]*\d)([A-Za-z0-9\-]+)",
+        r"Account\s*Number[:\s]*([\dA-Za-z\-]+)",
+        r"Account Number:\s*([\dA-Za-z\s]+)",
+        r"Account\s*No\.?[:\s]*([\dA-Za-z\-]+)",
+        r"ORIGINAL:\s*([\dA-Za-z\s]+)",
+        r"Account\s*[:\-]?\s*([A-Za-z0-9\-]{6,})",   # <--- enhanced pattern
+    ]
+
+    std_account = None
+    for p in std_patterns:
+        m = re.search(p, text, re.IGNORECASE)
+        if m:
+            std_account = m.group(1).replace(" ", "").strip()
+            break
+
+    # --- 2️⃣ Apex Clearing: account on next line ---
+    apex_match = re.search(
+        r"Apex\s+Clearing[^\n\r]*\n\s*([A-Z0-9\-]{4,})",
+        text,
+        re.IGNORECASE
+    )
+    apex_nextline = apex_match.group(1).strip() if apex_match else None
+
+    # --- 3️⃣ Apex Clearing: account on same line ---
+    apex_inline = re.search(
+        r"Apex\s+Clearing[^\n\r]{0,60}?([A-Z0-9\-]{4,})",
+        text,
+        re.IGNORECASE
+    )
+    apex_inline_acc = apex_inline.group(1).strip() if apex_inline else None
+
+    # --- 4️⃣ Combine and normalize ---
+    found = {std_account, apex_nextline, apex_inline_acc}
+    found = {a for a in found if a}  # remove None
+
+    detected_account = None
+    if found:
+        normalized = {a.replace("-", "").upper() for a in found}
+        if len(normalized) == 1:
+            detected_account = list(found)[0]
+        else:
+            detected_account = std_account or apex_nextline or apex_inline_acc
+
+
+    # ---------------------------------------------------------------------
+    # 8️⃣ DEBUG PRINT
+    # ---------------------------------------------------------------------
+    if page_number is not None:
+        if detected_account:
+            print(f"✅ Page {page_number} → Account detected: {detected_account}")
+        else:
+            print(f"⚠️ Page {page_number} → No account found")
+
+    return detected_account
+
