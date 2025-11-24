@@ -1,101 +1,17 @@
-import concurrent.futures
-import pytesseract
-import sys
-import traceback
-from PyPDF2 import PdfReader
+# Case 1: Same line → "Account No. 76W-59336"
+        r"Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
 
-import threading
+        # Case 2: Next line → "Account No.\n76W-59336"
+        r"Account\s*No\.?[^\n\r]*\n\s*([A-Za-z0-9\-]{4,})",
 
-def extract_text(path: str, page_index: int) -> str:
-    text = ""
+        # Merrill-specific labels
+        r"(?:Merrill(?:\s+Lynch|\s+Edge)?)?\s*Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
 
-    ocr_result = [""]     # list so it is mutable inside thread
-    pdf_result = [""]
+        # OCR distortions → Accoumt / Accouni / Accourt
+        r"Accou[nmrt]+\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
 
-    # -----------------------
-    # THREAD 1 → OCR
-    # -----------------------
-    def do_ocr():
-        try:
-            dpi = 300
-            img = pdf_page_to_image(path, page_index, dpi=dpi)
-            gray = img.convert("L")
-            bw = gray.point(lambda x: 0 if x < 180 else 255, '1')
+        # "Customer Account Number"
+        r"Customer\s*Account\s*Number[:\s]*([A-Za-z0-9\s\-]{4,})",
 
-            t_ocr = pytesseract.image_to_string(
-                bw,
-                lang="eng",
-                config="--oem 3 --psm 6"
-            ) or ""
-
-            print(f"[OCR dpi={dpi}]\n{t_ocr}", file=sys.stderr)
-            ocr_result[0] = t_ocr
-        except Exception:
-            traceback.print_exc()
-            ocr_result[0] = ""
-
-    # -----------------------
-    # THREAD 2 → PDFMiner
-    # -----------------------
-    def do_pdfminer():
-        try:
-            t1 = pdfminer_extract(path, page_numbers=[page_index], laparams=PDFMINER_LA_PARAMS) or ""
-            print(f"[PDFMiner full]\n{t1}", file=sys.stderr)
-            pdf_result[0] = t1
-        except Exception:
-            traceback.print_exc()
-            pdf_result[0] = ""
-
-    # -----------------------
-    # RUN OCR & PDFMiner AT SAME TIME
-    # -----------------------
-    t1 = threading.Thread(target=do_ocr)
-    t2 = threading.Thread(target=do_pdfminer)
-
-    t1.start()
-    t2.start()
-
-    t1.join()
-    t2.join()
-
-    # -----------------------
-    # Now use EXACT original logic
-    # -----------------------
-
-    # OCR first
-    if len(ocr_result[0].strip()) > len(text.strip()):
-        text = ocr_result[0]
-
-    # PDFMiner next
-    if len(pdf_result[0].strip()) > len(text.strip()):
-        text = pdf_result[0]
-
-    # PyPDF2 fallback (unchanged)
-    if len(text.strip()) < OCR_MIN_CHARS:
-        try:
-            reader = PdfReader(path)
-            t2 = reader.pages[page_index].extract_text() or ""
-            print(f"[PyPDF2 full]\n{t2}", file=sys.stderr)
-            if len(t2.strip()) > len(text): 
-                text = t2
-        except Exception:
-            traceback.print_exc()
-
-    return text
-
-
-# ── OCR for images
-def extract_text_from_image(file_path: str) -> str:
-    text = ""
-    try:
-        img = Image.open(file_path)
-        if img.mode!='RGB': img = img.convert('RGB')
-        et = pytesseract.image_to_string(img)
-        if et.strip():
-            print_phrase_context(et)
-            text = f"\n--- OCR Image {os.path.basename(file_path)} ---\n" + et
-        else: text = f"No text in image: {os.path.basename(file_path)}"
-    except Exception as e:
-        logger.error(f"Error OCR image {file_path}: {e}")
-        text = f"Error OCR image: {e}"
-    return text
+        # Plain "Account XXXXX"
+        r"Account\s+([A-Za-z0-9]{4,})",
