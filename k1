@@ -1,88 +1,224 @@
 
-def extract_account_number(text: str, page_number: int = None) -> str:
+import io
+import fitz  # PyMuPDF
+from PIL import Image, ImageOps, ImageEnhance, ImageFilter
+# ── Prevent PIL DecompressionBombError for large tax PDFs
+Image.MAX_IMAGE_PIXELS = None  # Safe because inputs are trusted (W-2/1099 client docs)
+
+
+def pdf_page_to_image(path: str, page_index: int, dpi: int = 300) -> Image.Image:
     """
-    Extract and normalize the account number or ORIGINAL number from page text.
-    Handles:
-    - 'Account Number: ####'
-    - 'ORIGINAL: ####'
-    - 'Account ####'
-    - 'Apex Clearing' followed by account number (next line or same line)
-    Automatically consolidates if both detections match.
-    Prints the detected account number per page for debugging.
-    Returns None if not found.
+    Convert a PDF page to a preprocessed PIL image optimized for OCR.
+    Adds automatic rotation correction for 0°, 90°, 180°, 270° pages.
+    Steps (no OpenCV):
+      - Detect & fix PDF metadata rotation
+      - OCR-based auto-rotation (Tesseract OSD)
+      - High DPI render
+      - Convert to grayscale
+      - Auto-contrast & brightness boost
+      - Sharpen twice
+      - Adaptive dual-thresholding (light & dark)
+      - Rescale small text images
     """
+    doc = fitz.open(path)
+    page = doc.load_page(page_index)
 
-    # --- 1️⃣ Standard patterns ---
-    std_patterns = [
-        r"Account\s*Number[:\s]*([\dA-Za-z\-]+)",
-        r"Account Number:\s*([\dA-Za-z\s]+)",
-        r"Account\s*No\.?[:\s]*([\dA-Za-z\-]+)",   # ✅ added: "Account No." or "Account No"s
-        r"ORIGINAL:\s*([\dA-Za-z\s]+)",
-        r"Account\s+(?!WITH\b)(?=[A-Za-z0-9\-]*\d)([A-Za-z0-9\-]+)",
-        r"Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
-        r"AccountNo\.?\s*[:\-]?\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
-        r"Account\s*No\.?[^\n\r]*\n\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
-        r"AccountNo\.?[^\n\r]*\n\s*([A-Za-z0-9]{1,3}[A-Za-z0-9\-]{3,})",
-        r"AccountNo\.?\s*([A-Za-z0-9]{4,})",
-        r"Account\s*No\s+([A-Za-z0-9]{4,})",
-        r"Account\s+([A-Za-z0-9]{1,4}\s+[0-9]{3,})",
-        r"Account\s*No\.?\s*([A-Za-z0-9]+[\u2010\u2011\u2012\u2013\u2014\-][A-Za-z0-9\-]+)",
-        # Case 1: Same line → "Account No. 76W-59336"
-        r"Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
-        # Case 2: Next line → "Account No.\n76W-59336"
-        r"Account\s*No\.?[^\n\r]*\n\s*([A-Za-z0-9\-]{4,})",
-        # Merrill-specific labels
-        r"(?:Merrill(?:\s+Lynch|\s+Edge)?)?\s*Account\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
-        # OCR distortions → Accoumt / Accouni / Accourt
-        r"Accou[nmrt]+\s*No\.?\s*[:\-]?\s*([A-Za-z0-9\-]{4,})",
-        # "Customer Account Number"
-        r"Customer\s*Account\s*Number[:\s]*([A-Za-z0-9\s\-]{4,})",
-        # Plain "Account XXXXX"
-        r"Account\s+([A-Za-z0-9]{4,})",
+    # 🧭 Step 1: Correct rotation using PDF metadata
+    rotation = int(page.rotation or 0)
+    zoom = dpi / 72
+    mat = fitz.Matrix(zoom, zoom).prerotate(-rotation)
 
-    ]
+    pix = page.get_pixmap(matrix=mat, alpha=False)
 
-    std_account = None
-    for p in std_patterns:
-        m = re.search(p, text, re.IGNORECASE)
-        if m:
-            std_account = m.group(1).replace(" ", "").strip()
-            break
+    # Convert to RGB image
+    try:
+        img = Image.open(io.BytesIO(pix.tobytes("png"))).convert("RGB")
+    except Image.DecompressionBombError:
+        logger.warning(f"⚠️ Skipping OCR: page too large in {path} p{page_index+1}")
+        doc.close()
+        return Image.new("L", (100, 100), color=255)
 
-    # --- 2️⃣ Apex Clearing: account on next line ---
-    apex_match = re.search(
-        r"Apex\s+Clearing[^\n\r]*\n\s*([A-Z0-9\-]{4,})",
-        text,
-        re.IGNORECASE
-    )
-    apex_nextline = apex_match.group(1).strip() if apex_match else None
+    # 🧠 Step 2: OCR-based auto-rotation (for scanned sideways pages)
+    try:
+        osd = pytesseract.image_to_osd(img, output_type=pytesseract.Output.DICT)
+        angle = osd.get("rotate", 0)
+        if angle != 0:
+            print(f"[Rotation Fix] Auto-rotating page {page_index+1} by {angle}°")
+            img = img.rotate(-angle, expand=True)
+    except Exception as e:
+        print(f"[WARN] Tesseract OSD rotation failed on page {page_index+1}: {e}")
 
-    # --- 3️⃣ Apex Clearing: account on same line ---
-    apex_inline = re.search(
-        r"Apex\s+Clearing[^\n\r]{0,60}?([A-Z0-9\-]{4,})",
-        text,
-        re.IGNORECASE
-    )
-    apex_inline_acc = apex_inline.group(1).strip() if apex_inline else None
+    doc.close()
 
-    # --- 4️⃣ Combine and normalize ---
-    found = {std_account, apex_nextline, apex_inline_acc}
-    found = {a for a in found if a}  # remove None
+    # 🖼 Step 3: Continue your original preprocessing
+    img = img.convert("L")  # grayscale
+    img = ImageOps.autocontrast(img)
+    img = ImageEnhance.Brightness(img).enhance(1.2)
+    img = ImageEnhance.Contrast(img).enhance(1.5)
+    img = img.filter(ImageFilter.SHARPEN)
+    img = img.filter(ImageFilter.UnsharpMask(radius=1, percent=150, threshold=3))
 
-    detected_account = None
-    if found:
-        normalized = {a.replace("-", "").upper() for a in found}
-        if len(normalized) == 1:
-            detected_account = list(found)[0]
-        else:
-            detected_account = std_account or apex_nextline or apex_inline_acc
+    # Rescale if small
+    w, h = img.size
+    if w < 2000:
+        scale = 2000 / w
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
 
-    # --- 5️⃣ Debug output ---
-    if page_number is not None:
-        if detected_account:
-            print(f"✅ Page {page_number} → Account detected: {detected_account}")
-        else:
-            print(f"⚠️ Page {page_number} → No account found")
+    # Dual thresholding
+    def threshold(im, cutoff):
+        return im.point(lambda x: 0 if x < cutoff else 255, "1")
 
-    return detected_account
+    light = threshold(img, 160)
+    dark = threshold(img, 200)
+    black_ratio_light = sum(light.getdata()) / (255 * light.size[0] * light.size[1])
+    black_ratio_dark = sum(dark.getdata()) / (255 * dark.size[0] * dark.size[1])
+    img_final = light if black_ratio_light < black_ratio_dark else dark
 
+    return img_final
+
+
+def preprocess_old_safe(img: Image.Image) -> Image.Image:
+    """
+    Gentle, safe OCR preprocessing that improves clarity
+    WITHOUT breaking W-2 text.
+    """
+    # 1. Convert to grayscale
+    img = img.convert("L")
+
+    # 2. Light auto-contrast (safe)
+    img = ImageOps.autocontrast(img, cutoff=1)
+
+    # 3. Slight sharpness boost
+    img = ImageEnhance.Sharpness(img).enhance(1.2)
+
+    # 4. Light contrast/brightness (safe)
+    img = ImageEnhance.Contrast(img).enhance(1.15)
+    img = ImageEnhance.Brightness(img).enhance(1.05)
+
+    # 5. Light noise reduction
+    img = img.filter(ImageFilter.MedianFilter(size=3))
+
+    # 6. Upscale if image is small
+    w, h = img.size
+    if w < 1800:
+        scale = 1800 / w
+        img = img.resize((int(w * scale), int(h * scale)), Image.LANCZOS)
+
+    return img
+import concurrent.futures
+import pytesseract
+import sys
+import traceback
+from PyPDF2 import PdfReader
+
+import threading
+from pdfminer.layout import LAParams
+
+# ---------------------------------------
+# UPDATED PDFMiner LAParams (fixes broken words & broken lines)
+# ---------------------------------------
+PDFMINER_LA_PARAMS = LAParams(
+    line_overlap=0.5,
+    char_margin=2.5,     # Groups characters into words better
+    line_margin=0.5,     # Groups words into lines better
+    word_margin=1.0      # Prevents word-by-word line breaks
+)
+
+
+def extract_text(path: str, page_index: int) -> str:
+    text = ""
+
+    ocr_result = [""]     # list so it is mutable inside thread
+    pdf_result = [""]
+
+    # -----------------------
+    # THREAD 1 → OCR
+    # -----------------------
+    def do_ocr():
+        try:
+            dpi = 300
+            img = pdf_page_to_image(path, page_index, dpi=dpi)
+            gray = img.convert("L")
+            bw = gray.point(lambda x: 0 if x < 180 else 255, '1')
+
+            t_ocr = pytesseract.image_to_string(
+                bw,
+                lang="eng",
+                config="--oem 3 --psm 6"
+            ) or ""
+
+            print(f"[OCR dpi={dpi}]\n{t_ocr}", file=sys.stderr)
+            ocr_result[0] = t_ocr
+        except Exception:
+            traceback.print_exc()
+            ocr_result[0] = ""
+
+    # -----------------------
+    # THREAD 2 → PDFMiner
+    # -----------------------
+    def do_pdfminer():
+        try:
+            t1 = pdfminer_extract(
+                path,
+                page_numbers=[page_index],
+                laparams=PDFMINER_LA_PARAMS   # <<< UPDATED HERE
+            ) or ""
+
+            print(f"[PDFMiner full]\n{t1}", file=sys.stderr)
+            pdf_result[0] = t1
+        except Exception:
+            traceback.print_exc()
+            pdf_result[0] = ""
+
+    # -----------------------
+    # RUN OCR & PDFMiner AT SAME TIME
+    # -----------------------
+    t1 = threading.Thread(target=do_ocr)
+    t2 = threading.Thread(target=do_pdfminer)
+
+    t1.start()
+    t2.start()
+
+    t1.join()
+    t2.join()
+
+    # -----------------------
+    # Now use EXACT original logic
+    # -----------------------
+
+    # OCR first
+    if len(ocr_result[0].strip()) > len(text.strip()):
+        text = ocr_result[0]
+
+    # PDFMiner next
+    if len(pdf_result[0].strip()) > len(text.strip()):
+        text = pdf_result[0]
+
+    # PyPDF2 fallback (unchanged)
+    if len(text.strip()) < OCR_MIN_CHARS:
+        try:
+            reader = PdfReader(path)
+            t2 = reader.pages[page_index].extract_text() or ""
+            print(f"[PyPDF2 full]\n{t2}", file=sys.stderr)
+            if len(t2.strip()) > len(text): 
+                text = t2
+        except Exception:
+            traceback.print_exc()
+
+    return text
+
+# ── OCR for images
+def extract_text_from_image(file_path: str) -> str:
+    text = ""
+    try:
+        img = Image.open(file_path)
+        if img.mode!='RGB': img = img.convert('RGB')
+        et = pytesseract.image_to_string(img)
+        if et.strip():
+            print_phrase_context(et)
+            text = f"\n--- OCR Image {os.path.basename(file_path)} ---\n" + et
+        else: text = f"No text in image: {os.path.basename(file_path)}"
+    except Exception as e:
+        logger.error(f"Error OCR image {file_path}: {e}")
+        text = f"Error OCR image: {e}"
+    return text
