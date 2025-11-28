@@ -20,10 +20,8 @@ import pytesseract
 
 
 # ✅ Auto-detect OS and set Tesseract path accordingly
-if platform.system() == "Windows":
-    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-else:
-    pytesseract.pytesseract.tesseract_cmd = "tesseract"
+import pytesseract
+pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Vinod Kumar\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
 
 
 #rom pdf2image import convert_from_path
@@ -2427,6 +2425,42 @@ def k1_page_priority(text):
 
     # Fallback last
     return 99
+def extract_k1_company(text: str) -> str | None:
+    # Normalize line breaks and spaces
+    clean = re.sub(r"[^\w\s,&.'\-]", " ", text)
+    clean = re.sub(r"\s+", " ", clean).strip()
+
+    # 1. Strongest pattern: any line ending with LLC/LP/INC/CORP/etc.
+    multi = re.findall(
+        r"([A-Z][A-Z\s,&.'\-]{2,80}?(?:LLC|L\.L\.C\.|INC|CORP|LP|L\.P\.|LLP|FUND))",
+        text,
+        flags=re.IGNORECASE,
+    )
+    if multi:
+        # choose longest = most complete name
+        return max(multi, key=len).strip()
+
+    # 2. Multi-line OCR-broken names: join consecutive lines
+    lines = text.splitlines()
+    for i in range(len(lines) - 1):
+        joined = (lines[i] + " " + lines[i+1]).strip()
+        m = re.search(
+            r"([A-Z][A-Z\s,&.'\-]{2,80}?(?:LLC|INC|CORP|LP|LLP|FUND))",
+            joined,
+            flags=re.IGNORECASE,
+        )
+        if m:
+            return m.group(1).strip()
+
+    # 3. fallback for things like “Desire Homes North Salem LLC”
+    words = clean.split()
+    for i in range(len(words)):
+        for j in range(i+2, min(i+8, len(words))):
+            segment = " ".join(words[i:j])
+            if re.search(r"(LLC|INC|CORP|LP|LLP)$", segment, flags=re.IGNORECASE):
+                return segment
+
+    return None
 
 
 # ── Merge + bookmarks + cleanup
@@ -2703,21 +2737,15 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str, tp_ssn: str = "", sp_s
                     )
 
                     # Extract company / partnership name
-                    company = None
-                    m = re.search(r"(?im)Partnership'?s\s+name[:\s]*([\w& ,.'\-]{3,100})", tiered)
-                    if m:
-                        company = m.group(1).strip()
-                    else:
-                        m = re.search(
-                            r"(?im)\b([A-Z0-9& ,.'\-]{3,80}(?:LLC|L\.L\.C\.|LP|INC|CORP|PARTNERSHIP|FUND))\b",
-                            tiered,
-                        )
-                        if m and not m.group(1).startswith("Partner"):
-                            company = m.group(1).strip()
+                    company = extract_k1_company(tiered)
+
+
 
                     k1_pages.setdefault(ein_num, []).append((path, i, "K-1"))
                     if company:
                         k1_names[ein_num] = company
+
+
 
 
                     print(
@@ -2998,11 +3026,13 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str, tp_ssn: str = "", sp_s
             # convert original anchor index → merged page index
             anchor_page = k1_page_map.get((anchor_path, anchor_idx), 0)
 
+            clean = extract_k1_company(company)
             comp_node = merger.add_outline_item(
-                f"{company} (EIN {ein})",
+                f"{clean} (EIN {ein})",
                 anchor_page,
                 parent=form_roots[form_type]
             )
+
 
             # ---- NOW append pages IN SORTED ORDER ----
             for (p, idx, _) in sorted_pages:
