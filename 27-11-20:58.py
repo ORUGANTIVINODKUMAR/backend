@@ -15,9 +15,28 @@ from pdfminer.high_level import extract_text as pdfminer_extract
 from pdfminer.layout import LAParams
 from PyPDF2 import PdfReader, PdfMerger
 
+import platform
 import pytesseract
-pytesseract.pytesseract.tesseract_cmd = r"C:\Users\Vinod Kumar\AppData\Local\Programs\Tesseract-OCR\tesseract.exe"
+
+
+# ✅ Auto-detect OS and set Tesseract path accordingly
+if platform.system() == "Windows":
+    pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+else:
+    pytesseract.pytesseract.tesseract_cmd = "tesseract"
+
+
 #rom pdf2image import convert_from_path
+import fitz  # PyMuPDF
+import pdfplumber
+from PIL import Image
+import logging
+
+# Add the helper at the [To get bookmark for]
+PHRASE = "Employer's name, address, and ZIP code"
+INT_PHRASE = "Interest income"
+
+
 import fitz  # PyMuPDF
 import pdfplumber
 from PIL import Image
@@ -2929,7 +2948,27 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str, tp_ssn: str = "", sp_s
         # 5. Create folders
         form_roots = {}
         for form in sorted_forms:
-            form_roots[form] = merger.add_outline_item(f"Form {form}", 0, parent=k1_root)
+            # find the first merged page for this form
+            ein_for_form = [
+                ein for ein in k1_pages
+                if k1_form_type.get(ein, "1065") == form
+            ]
+
+            if ein_for_form:
+                first_ein = ein_for_form[0]
+                first_page = min(
+                    k1_page_map.get((p, idx), 999999)
+                    for (p, idx, _) in k1_pages[first_ein]
+                )
+            else:
+                first_page = 0  # fallback
+
+            form_roots[form] = merger.add_outline_item(
+                f"Form {form}",
+                first_page,
+                parent=k1_root
+            )
+
 
         # 6. NOW handle each EIN group
         for ein in sorted(k1_pages, key=lambda e: ein_first_order[e]):
@@ -2944,18 +2983,26 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str, tp_ssn: str = "", sp_s
             )
 
         # Find anchor = main K-1 form page
-            anchor = None
+            anchor_path, anchor_idx = None, None
             for (p, idx, _) in sorted_pages:
-                t = extract_text(p, idx).lower()
-                if "schedule k-1" in t and ("form 1065" in t or "form 1120-s" in t or "form 1041" in t):
-                    anchor = idx
+                text = extract_text(p, idx).lower()
+                if "schedule k-1" in text and ("form 1065" in text or "form 1120-s" in text or "form 1041" in text):
+                    anchor_path, anchor_idx = p, idx
                     break
+            # fallback
+            if anchor_path is None:
+                anchor_path, anchor_idx = sorted_pages[0][0], sorted_pages[0][1]
 
-            if anchor is None:
-                anchor = sorted_pages[0][1]
 
             # Create the EIN bookmark
-            comp_node = merger.add_outline_item(f"{company} (EIN {ein})", anchor, parent=form_roots[form_type])
+            # convert original anchor index → merged page index
+            anchor_page = k1_page_map.get((anchor_path, anchor_idx), 0)
+
+            comp_node = merger.add_outline_item(
+                f"{company} (EIN {ein})",
+                anchor_page,
+                parent=form_roots[form_type]
+            )
 
             # ---- NOW append pages IN SORTED ORDER ----
             for (p, idx, _) in sorted_pages:
@@ -2980,11 +3027,25 @@ def merge_with_bookmarks(input_dir: str, output_pdf: str, tp_ssn: str = "", sp_s
         for form, grp in sorted(groups.items(), key=lambda kv: get_form_priority(kv[0], 'Income')):
                 # ✅ Run the unified K-1 block FIRST
             if form == 'K-1':
-    # ──────  # nothing left for this form after filtering
-                build_k1_bookmarks(merger, root, k1_pages, k1_names, extract_text, append_and_bookmark, is_unused_page)
-                # Remove all K-1 synthetic entries so normal loop won’t add duplicates
-                #income = [e for e in income if e[2] != "K-1"]
+
+                # STEP 1 — Append ALL real K-1 pages FIRST (no bookmarks yet)
+                for ein, pages in k1_pages.items():
+                    sorted_pages = sorted(
+                        pages,
+                        key=lambda x: k1_page_priority(extract_text(x[0], x[1]))
+                    )
+                    for (p, idx, _) in sorted_pages:
+                        append_and_bookmark((p, idx, "K-1"), None, "", with_bookmark=False)
+
+                # STEP 2 — NOW build bookmarks (page numbers now exist)
+                build_k1_bookmarks(
+                    merger, root,
+                    k1_pages, k1_names,
+                    extract_text, append_and_bookmark, is_unused_page
+                )
+
                 continue
+
 
             if stop_after_na:
                 break
